@@ -1,313 +1,144 @@
-
-#!/bin/bash
-set -Eeuo pipefail
-
-# ==========================================
-# 3PROXY INSTALLER - CENTOS STREAM 10
-# IPv4 IN / IPv6 OUT
-# ==========================================
-
-WORKDIR="/home/proxy-installer"
-INSTALL_DIR="/usr/local/3proxy"
-CONFIG_DIR="/etc/3proxy"
-DATA_FILE="$WORKDIR/data.txt"
-FIRST_PORT=10000
-MAX_PORT=60000
-
-log() {
-    echo -e "\n[$(date '+%F %T')] $*"
+#!/bin/sh
+random() {
+	tr </dev/urandom -dc A-Za-z0-9 | head -c5
+	echo
 }
 
-fail() {
-    echo "ERROR: $*" >&2
-    exit 1
+array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
+gen64() {
+	ip64() {
+		echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
+	}
+	echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
 }
 
-[[ $EUID -eq 0 ]] || fail "Run this script as root."
-
-for cmd in dnf systemctl ip; do
-    command -v "$cmd" >/dev/null || fail "Missing command: $cmd"
-done
-
-# ==========================================
-# INPUT
-# ==========================================
-
-read -rp "How many proxies do you want to create? " COUNT
-
-[[ "$COUNT" =~ ^[0-9]+$ ]] || fail "Invalid number."
-(( COUNT > 0 && COUNT <= 10000 )) || fail "Count must be 1-10000."
-
-LAST_PORT=$((FIRST_PORT + COUNT - 1))
-
-(( LAST_PORT <= MAX_PORT )) || fail "Port range exceeded."
-
-# ==========================================
-# INSTALL PACKAGES
-# ==========================================
-
-log "Installing dependencies..."
-
-dnf install -y \
-    gcc make git curl zip unzip \
-    iproute iputils firewalld \
-    openssl python3
-
-systemctl enable --now firewalld
-
-# ==========================================
-# DETECT NETWORK
-# ==========================================
-
-log "Detecting network..."
-
-IP4=$(curl -4 -fsS --max-time 10 https://icanhazip.com | tr -d '\r\n') \
-    || fail "Cannot detect public IPv4."
-
-IP6=$(curl -6 -fsS --max-time 10 https://icanhazip.com | tr -d '\r\n') \
-    || fail "Cannot detect public IPv6."
-
-IFACE=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null |
-    awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1);exit}}')
-
-[[ -n "$IFACE" ]] || fail "Cannot detect IPv6 network interface."
-
-# Get the routed /64 prefix.
-PREFIX=$(python3 - "$IP6" <<'PY'
-import ipaddress, sys
-print(ipaddress.IPv6Interface(sys.argv[1] + "/64").network.network_address)
-PY
-)
-
-PREFIX="${PREFIX%::}"
-
-log "Public IPv4: $IP4"
-log "Public IPv6: $IP6"
-log "Interface: $IFACE"
-log "IPv6 prefix: $PREFIX/64"
-
-# ==========================================
-# INSTALL 3PROXY
-# ==========================================
-
-log "Downloading official 3proxy source..."
-
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
-
-if [[ ! -d 3proxy-src ]]; then
-    git clone --depth 1 \
-        https://github.com/3proxy/3proxy.git \
-        3proxy-src
-fi
-
-cd 3proxy-src
-
-log "Compiling 3proxy..."
-
-make -f Makefile.Linux
-
-BINARY="src/3proxy"
-
-[[ -x "$BINARY" ]] || fail "3proxy binary not found."
-
-mkdir -p "$INSTALL_DIR/bin" "$CONFIG_DIR"
-
-install -m 755 "$BINARY" "$INSTALL_DIR/bin/3proxy"
-
-# ==========================================
-# GENERATE PROXY DATA
-# ==========================================
-
-log "Generating proxy accounts..."
-
-: > "$DATA_FILE"
-: > "$WORKDIR/proxy.txt"
-
-for ((i=0; i<COUNT; i++)); do
-
-    PORT=$((FIRST_PORT + i))
-
-    USERNAME="usr$(openssl rand -hex 5)"
-    PASSWORD="pass$(openssl rand -hex 8)"
-
-    # Generate a random IPv6 address within the /64.
-    IPV6=$(python3 - "$PREFIX" <<'PY'
-import ipaddress, secrets, sys
-network = ipaddress.IPv6Network(sys.argv[1] + "::/64")
-print(ipaddress.IPv6Address(int(network.network_address) |
-                            secrets.randbits(64)))
-PY
-)
-
-    echo "$USERNAME/$PASSWORD/$PORT/$IPV6" >> "$DATA_FILE"
-
-    echo "$IP4:$PORT:$USERNAME:$PASSWORD" >> "$WORKDIR/proxy.txt"
-
-done
-
-chmod 600 "$DATA_FILE" "$WORKDIR/proxy.txt"
-
-# ==========================================
-# IPV6 ADDRESS SETUP
-# ==========================================
-
-log "Creating IPv6 setup service..."
-
-cat > "$INSTALL_DIR/add-ipv6.sh" <<EOF
-#!/bin/bash
-set -e
-IFACE="$IFACE"
-
-while IFS=/ read -r USER PASS PORT IPV6; do
-    [ -n "\$IPV6" ] || continue
-    ip -6 addr replace "\$IPV6/64" dev "\$IFACE" nodad
-done < "$DATA_FILE"
-EOF
-
-chmod 700 "$INSTALL_DIR/add-ipv6.sh"
-
-cat > /etc/systemd/system/3proxy-ipv6.service <<EOF
+install_3proxy() {
+    echo "installing 3proxy"
+    URL="https://raw.githubusercontent.com/hungace97th/proxyv6/main/3proxy-1.0.2.tar.gz"
+    wget -qO- $URL | bsdtar -xvf-
+    cd 3proxy-3proxy-0.8.6
+    make -f Makefile.Linux
+    mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
+    cp src/3proxy /usr/local/etc/3proxy/bin/
+    
+    # Tạo systemd service thay cho SysVinit cũ để tương thích CentOS 10
+    cat << 'EOF' > /etc/systemd/system/3proxy.service
 [Unit]
-Description=Configure 3proxy IPv6 addresses
-After=network-online.target
-Wants=network-online.target
-Before=3proxy.service
+Description=3proxy Proxy Server
+After=network.target
 
 [Service]
-Type=oneshot
-ExecStart=$INSTALL_DIR/add-ipv6.sh
-RemainAfterExit=yes
+Type=forking
+ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# ==========================================
-# GENERATE 3PROXY CONFIG
-# ==========================================
+    systemctl daemon-reload
+    systemctl enable 3proxy
+    cd $WORKDIR
+}
 
-log "Generating 3proxy configuration..."
-
-cat > "$CONFIG_DIR/3proxy.cfg" <<EOF
+gen_3proxy() {
+    cat <<EOF
+daemon
 maxconn 1000
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
-
-setgid 65534
-setuid 65534
-
-auth strong
-EOF
-
-while IFS=/ read -r USER PASS PORT IPV6; do
-
-    [[ -n "$USER" ]] || continue
-
-    cat >> "$CONFIG_DIR/3proxy.cfg" <<EOF
-
-users $USER:CL:$PASS
-auth strong
-allow $USER
-proxy -6 -n -a -p$PORT -i0.0.0.0 -e$IPV6
+setgid 65535
+setuid 65535
 flush
+auth strong
+
+users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
+
+$(awk -F "/" '{print "auth strong\n" \
+"allow " $1 "\n" \
+"proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
+"flush\n"}' ${WORKDATA})
 EOF
+}
 
-done < "$DATA_FILE"
-
-chmod 600 "$CONFIG_DIR/3proxy.cfg"
-
-# ==========================================
-# SYSTEMD SERVICE
-# ==========================================
-
-log "Creating 3proxy systemd service..."
-
-cat > /etc/systemd/system/3proxy.service <<EOF
-[Unit]
-Description=3proxy IPv4 to IPv6 Proxy Server
-Requires=3proxy-ipv6.service
-After=network-online.target firewalld.service 3proxy-ipv6.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=$INSTALL_DIR/bin/3proxy $CONFIG_DIR/3proxy.cfg
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=10048
-
-[Install]
-WantedBy=multi-user.target
+gen_proxy_file_for_user() {
+    cat >proxy.txt <<EOF
+$(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' ${WORKDATA})
 EOF
+}
 
-# ==========================================
-# FIREWALL
-# ==========================================
+upload_proxy() {
+    local PASS=$(random)
+    zip --password $PASS proxy.zip proxy.txt
+    URL=$(curl -s --upload-file proxy.zip https://transfer.sh/proxy.zip)
 
-log "Opening proxy ports..."
+    echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
+    echo "Download zip archive from: ${URL}"
+    echo "Password: ${PASS}"
+}
 
-firewall-cmd --permanent \
-    --add-port="${FIRST_PORT}-${LAST_PORT}/tcp"
+gen_data() {
+    seq $FIRST_PORT $LAST_PORT | while read port; do
+        echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 $IP6)"
+    done
+}
 
-firewall-cmd --reload
+gen_iptables() {
+    cat <<EOF
+$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -m state --state NEW -j ACCEPT"}' ${WORKDATA}) 
+EOF
+}
 
-# ==========================================
-# ENABLE AND START
-# ==========================================
+# Cập nhật dùng lệnh iproute2 (thay thế ifconfig cũ bị loại bỏ trên bản mới)
+gen_ifconfig() {
+    cat <<EOF
+$(awk -F "/" '{print "ip -6 addr add " $5 "/64 dev eth0"}' ${WORKDATA})
+EOF
+}
 
-log "Starting services..."
+echo "installing apps"
+# Bổ sung các gói biên dịch và công cụ mạng còn thiếu trên CentOS mới
+yum -y install gcc make wget net-tools bsdtar zip iptables-services >/dev/null
 
-systemctl daemon-reload
+# Khai báo WORKDIR sớm trước khi thực hiện các tiến trình tạo file
+WORKDIR="/home/proxy-installer"
+WORKDATA="${WORKDIR}/data.txt"
+mkdir -p $WORKDIR && cd $WORKDIR
 
-systemctl enable 3proxy-ipv6.service
-systemctl enable 3proxy.service
+IP4=$(curl -4 -s icanhazip.com)
+IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 
-systemctl restart 3proxy-ipv6.service
-systemctl restart 3proxy.service
+echo "Internal ip = ${IP4}. External sub for ip6 = ${IP6}"
 
-sleep 2
+echo "How many proxy do you want to create? Example 500"
+read COUNT
 
-systemctl is-active --quiet 3proxy.service \
-    || fail "3proxy failed to start. Check journalctl -u 3proxy."
+FIRST_PORT=10000
+LAST_PORT=$(($FIRST_PORT + $COUNT - 1))
 
-# ==========================================
-# EXPORT PROXY LIST
-# ==========================================
+gen_data >$WORKDIR/data.txt
+gen_iptables >$WORKDIR/boot_iptables.sh
+gen_ifconfig >$WORKDIR/boot_ifconfig.sh
+chmod +x ${WORKDIR}/boot_*.sh
 
-log "Exporting proxy list..."
+gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
-cd "$WORKDIR"
+# Cấu hình kích hoạt thiết lập mạng và tường lửa khi boot hệ thống
+cat <<EOF >/etc/rc.d/rc.local
+#!/bin/bash
+bash ${WORKDIR}/boot_iptables.sh
+bash ${WORKDIR}/boot_ifconfig.sh
+ulimit -n 10048
+EOF
+chmod +x /etc/rc.d/rc.local
+systemctl enable rc-local
 
-ZIP_PASS=$(openssl rand -hex 8)
+# Thực thi ngay lập tức các lệnh thiết lập mạng và khởi động dịch vụ
+bash ${WORKDIR}/boot_iptables.sh
+bash ${WORKDIR}/boot_ifconfig.sh
+ulimit -n 10048
+systemctl start 3proxy
 
-zip -q -j -P "$ZIP_PASS" proxy.zip proxy.txt
+gen_proxy_file_for_user
 
-chmod 600 proxy.zip
-
-# ==========================================
-# RESULT
-# ==========================================
-
-echo
-echo "=========================================="
-echo "       3PROXY INSTALLATION COMPLETE"
-echo "=========================================="
-echo "IPv4       : $IP4"
-echo "IPv6 Prefix: $PREFIX/64"
-echo "Interface  : $IFACE"
-echo "Proxy count: $COUNT"
-echo "Port range : $FIRST_PORT - $LAST_PORT"
-echo "=========================================="
-echo "Proxy list : $WORKDIR/proxy.zip"
-echo "ZIP password: $ZIP_PASS"
-echo "=========================================="
-echo
-echo "Check service:"
-echo "systemctl status 3proxy"
-echo
-echo "View logs:"
-echo "journalctl -u 3proxy -f"
-echo
-echo "Proxy format: IP:PORT:LOGIN:PASS"
-echo "=========================================="
+upload_proxy
