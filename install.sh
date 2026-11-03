@@ -4,6 +4,14 @@
 TELEGRAM_BOT_TOKEN="9054015301:AAHTLz06YaE15DehbDm9725-mOF0tCpF9ZE"
 TELEGRAM_CHAT_ID="hungace97th"
 
+# Tự động cài đặt các gói công cụ còn thiếu trên VPS (Hỗ trợ Ubuntu/Debian/CentOS/AlmaLinux)
+echo "Đang kiểm tra và cài đặt các công cụ cần thiết (curl, wget, bsdtar, make, gcc)..."
+if [ -f /etc/debian_version ]; then
+    apt-get update -y && apt-get install -y wget curl bsdtar make gcc net-tools iptables zip
+elif [ -f /etc/redhat-release ]; then
+    yum install -y wget curl bsdtar make gcc net-tools iptables zip
+fi
+
 random() {
     tr -dc A-Za-z0-9 </dev/urandom | head -c5
     echo
@@ -18,16 +26,18 @@ gen64() {
 }
 
 install_3proxy() {
-    echo "installing 3proxy"
+    echo "Đang cài đặt 3proxy..."
     URL="https://raw.githubusercontent.com/quayvlog/quayvlog/main/3proxy-3proxy-0.8.6.tar.gz"
     wget -qO- $URL | bsdtar -xvf-
     cd 3proxy-3proxy-0.8.6
     make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/
-    cp ./scripts/rc.d/proxy.sh /etc/init.d/3proxy
-    chmod +x /etc/init.d/3proxy
-    chkconfig 3proxy on
+    if [ -f "./scripts/rc.d/proxy.sh" ]; then
+        cp ./scripts/rc.d/proxy.sh /etc/init.d/3proxy
+        chmod +x /etc/init.d/3proxy
+        chkconfig 3proxy on 2>/dev/null || systemctl enable 3proxy 2>/dev/null
+    fi
     cd $WORKDIR
 }
 
@@ -60,23 +70,22 @@ upload_proxy() {
     zip --password $PASS proxy.zip proxy.txt
     URL=$(curl -s --upload-file proxy.zip https://transfer.sh/proxy.zip)
     
-    # Gửi thông tin kèm file qua Telegram
     if [ -f "proxy.txt" ]; then
         MESSAGE="🚀 *Tạo IPv6 Proxy Thành Công!*%0A📍 Tổng số lượng: $COUNT%0A🔑 Mật khẩu giải nén zip: \`${PASS}\`%0A🔗 Link tải file zip: ${URL}"
         
-        # Gửi tin nhắn text thông báo
+        # Gửi tin nhắn text thông báo qua Telegram
         curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
             -d "text=${MESSAGE}" \
             -d "parse_mode=Markdown" >/dev/null
 
-        # Gửi file proxy trực tiếp lên Telegram
+        # Gửi file proxy trực tiếp qua Telegram
         curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
             -F "document=@proxy.txt" \
             -F "caption=Danh sách proxy chi tiết định dạng IP:PORT:USER:PASS" >/dev/null
             
-        echo "Đã gửi thông tin và file proxy về Telegram thành công!"
+        echo "✅ Đã gửi thông tin và file proxy về Telegram thành công!"
     fi
 }
 
@@ -88,8 +97,6 @@ gen_data() {
 
 gen_iptables() {
     cat <<EOF
-0/${WORKDIR}/boot_ifconfig.sh
-0/${WORKDIR}/boot_iptables.sh
 iptables -F
 iptables -X
 iptables -t nat -F
@@ -107,8 +114,6 @@ $(awk -F "/" '{print "ifconfig eth0 inet6 add " $5}' ${WORKDATA})
 EOF
 }
 
-install_3proxy
-
 WORKDIR="/home/proxy-installer"
 WORKDATA="${WORKDIR}/data.txt"
 mkdir -p $WORKDIR && cd $WORKDIR
@@ -123,6 +128,7 @@ read COUNT
 FIRST_PORT=10000
 LAST_PORT=$(($FIRST_PORT + $COUNT))
 
+install_3proxy
 gen_data >$WORKDIR/data.txt
 gen_iptables >$WORKDIR/boot_iptables.sh
 gen_ifconfig >$WORKDIR/boot_ifconfig.sh
@@ -139,7 +145,7 @@ EOF
 
 bash ${WORKDIR}/boot_ifconfig.sh
 bash ${WORKDIR}/boot_iptables.sh
-service 3proxy start
+service 3proxy start 2>/dev/null || /usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
 
 gen_proxy_file_for_user
 upload_proxy
