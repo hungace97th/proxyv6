@@ -11,33 +11,17 @@ gen64() {
 	}
 	echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
 }
-
 install_3proxy() {
     echo "installing 3proxy"
-    URL="https://raw.githubusercontent.com/quayvlog/quayvlog/main/3proxy-3proxy-0.8.6.tar.gz"
+    URL="https://raw.githubusercontent.com/hungace97th/proxyv6/main/3proxy-1.0.2.tar.gz"
     wget -qO- $URL | bsdtar -xvf-
-    cd 3proxy-3proxy-0.8.6
+    cd 3proxy-1.0.2
     make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/
-    
-    # Tạo systemd service thay cho SysVinit cũ để tương thích CentOS 10
-    cat << 'EOF' > /etc/systemd/system/3proxy.service
-[Unit]
-Description=3proxy Proxy Server
-After=network.target
-
-[Service]
-Type=forking
-ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable 3proxy
+    cp ./scripts/rc.d/proxy.sh /etc/init.d/3proxy
+    chmod +x /etc/init.d/3proxy
+    chkconfig 3proxy on
     cd $WORKDIR
 }
 
@@ -75,8 +59,8 @@ upload_proxy() {
     echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
     echo "Download zip archive from: ${URL}"
     echo "Password: ${PASS}"
-}
 
+}
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
         echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 $IP6)"
@@ -85,59 +69,51 @@ gen_data() {
 
 gen_iptables() {
     cat <<EOF
-$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -m state --state NEW -j ACCEPT"}' ${WORKDATA}) 
+    $(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA}) 
 EOF
 }
 
-# Cập nhật dùng lệnh iproute2 (thay thế ifconfig cũ bị loại bỏ trên bản mới)
 gen_ifconfig() {
     cat <<EOF
-$(awk -F "/" '{print "ip -6 addr add " $5 "/64 dev enp1s0"}' ${WORKDATA})
+$(awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA})
 EOF
 }
-
 echo "installing apps"
-# Bổ sung các gói biên dịch và công cụ mạng còn thiếu trên CentOS mới
-yum -y install gcc make wget net-tools bsdtar zip iptables-services >/dev/null
+yum -y install gcc net-tools bsdtar zip >/dev/null
 
-# Khai báo WORKDIR sớm trước khi thực hiện các tiến trình tạo file
+install_3proxy
+
+echo "working folder = /home/proxy-installer"
 WORKDIR="/home/proxy-installer"
 WORKDATA="${WORKDIR}/data.txt"
-mkdir -p $WORKDIR && cd $WORKDIR
+mkdir $WORKDIR && cd $_
 
 IP4=$(curl -4 -s icanhazip.com)
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 
-echo "Internal ip = ${IP4}. External sub for ip6 = ${IP6}"
+echo "Internal ip = ${IP4}. Exteranl sub for ip6 = ${IP6}"
 
 echo "How many proxy do you want to create? Example 500"
 read COUNT
 
 FIRST_PORT=10000
-LAST_PORT=$(($FIRST_PORT + $COUNT - 1))
+LAST_PORT=$(($FIRST_PORT + $COUNT))
 
 gen_data >$WORKDIR/data.txt
 gen_iptables >$WORKDIR/boot_iptables.sh
 gen_ifconfig >$WORKDIR/boot_ifconfig.sh
-chmod +x ${WORKDIR}/boot_*.sh
+chmod +x ${WORKDIR}/boot_*.sh /etc/rc.local
 
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
-# Cấu hình kích hoạt thiết lập mạng và tường lửa khi boot hệ thống
-cat <<EOF >/etc/rc.d/rc.local
-#!/bin/bash
+cat >>/etc/rc.local <<EOF
 bash ${WORKDIR}/boot_iptables.sh
 bash ${WORKDIR}/boot_ifconfig.sh
 ulimit -n 10048
+service 3proxy start
 EOF
-chmod +x /etc/rc.d/rc.local
-systemctl enable rc-local
 
-# Thực thi ngay lập tức các lệnh thiết lập mạng và khởi động dịch vụ
-bash ${WORKDIR}/boot_iptables.sh
-bash ${WORKDIR}/boot_ifconfig.sh
-ulimit -n 10048
-systemctl start 3proxy
+bash /etc/rc.local
 
 gen_proxy_file_for_user
 
