@@ -92,7 +92,7 @@ EOF
 # Cập nhật dùng lệnh iproute2 (thay thế ifconfig cũ bị loại bỏ trên bản mới)
 gen_ifconfig() {
     cat <<EOF
-$(awk -F "/" '{print "ip -6 addr add " $5 "/64 dev NIC=$(ip route show default | awk '/default/ {print $5}')"}' ${WORKDATA})
+$(awk -F "/" '{print "ip -6 addr add " $5 "/64 dev enp1s0"}' ${WORKDATA})
 EOF
 }
 
