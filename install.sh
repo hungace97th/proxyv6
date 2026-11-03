@@ -19,7 +19,7 @@ gen64() {
 
 install_3proxy() {
     echo "installing 3proxy"
-    URL="https://raw.githubusercontent.com/hungace97th/proxyv6/main/3proxy-3proxy-0.8.6.tar.gz"
+    URL="https://raw.githubusercontent.com/quayvlog/quayvlog/main/3proxy-3proxy-0.8.6.tar.gz"
     wget -qO- $URL | bsdtar -xvf-
     cd 3proxy-3proxy-0.8.6
     make -f Makefile.Linux
@@ -50,12 +50,33 @@ EOF
 }
 
 gen_proxy_file_for_user() {
-    cat >proxy.txt <<EOF " "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "/" ":" "Download "Password: "Proxy "Sending "chat_id="${TELEGRAM_CHAT_ID}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" "parse_mode="Markdown" "text="${MESSAGE}" # $(awk $1 $2}' $3 $4 $PASS ${PASS}" ${URL}" ${WORKDATA}) && '\n') '{print --password --upload-file -F -X -d -n -s EOF Format Gửi IP:PORT:LOGIN:PASS" MESSAGE="🚀 *Tạo IPv6 Proxy Thành Công!*\\n📍 Tổng số lượng: $COUNT\\n🔗 Link tải: ${URL}\\n🔑 Mật khẩu zip: \`${PASS}\`" PASS="$(random" POST Telegram Telegram..." URL="$(curl" [ \ ] ]; archive curl echo file from: https://transfer.sh/proxy.zip) if info is proxy proxy.txt proxy.zip ready! then thông tin tiếp to tr trực upload_proxy() và về zip { | }>/dev/null
+    cat >proxy.txt <<EOF
+$(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2}' ${WORKDATA})
+EOF
+}
 
+upload_proxy() {
+    PASS=$(random)
+    zip --password $PASS proxy.zip proxy.txt
+    URL=$(curl -s --upload-file proxy.zip https://transfer.sh/proxy.zip)
+    
+    # Gửi thông tin kèm file qua Telegram
+    if [ -f "proxy.txt" ]; then
+        MESSAGE="🚀 *Tạo IPv6 Proxy Thành Công!*%0A📍 Tổng số lượng: $COUNT%0A🔑 Mật khẩu giải nén zip: \`${PASS}\`%0A🔗 Link tải file zip: ${URL}"
+        
+        # Gửi tin nhắn text thông báo
+        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown" >/dev/null
+
+        # Gửi file proxy trực tiếp lên Telegram
         curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
             -F "document=@proxy.txt" \
-            -F "caption=File proxy chi tiết (IP:PORT:USER:PASS)" >/dev/null
+            -F "caption=Danh sách proxy chi tiết định dạng IP:PORT:USER:PASS" >/dev/null
+            
+        echo "Đã gửi thông tin và file proxy về Telegram thành công!"
     fi
 }
 
@@ -66,7 +87,25 @@ gen_data() {
 }
 
 gen_iptables() {
-    cat <<EOF " "/" "/64"}' "ifconfig "installing "iptables $(awk $4 $5 ${WORKDATA}) '{print --dport --state -F -I -j -m -p -y <<EOF ACCEPT"}' EOF INPUT NEW add apps" bsdtar cat echo eth0 gcc gen_ifconfig() inet6 install net-tools state tcp yum zip { }>/dev/null
+    cat <<EOF
+0/${WORKDIR}/boot_ifconfig.sh
+0/${WORKDIR}/boot_iptables.sh
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+$(awk -F "/" '{print "iptables -A INPUT -p tcp --dport " $4 " -m state --state NEW -j ACCEPT"}' ${WORKDATA})
+EOF
+}
+
+gen_ifconfig() {
+    cat <<EOF
+$(awk -F "/" '{print "ifconfig eth0 inet6 add " $5}' ${WORKDATA})
+EOF
+}
 
 install_3proxy
 
@@ -91,4 +130,16 @@ chmod +x ${WORKDIR}/boot_*.sh
 
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
-cat >>/etc/rc.local <<EOF ${WORKDIR}/boot_ifconfig.sh ${WORKDIR}/boot_iptables.sh -n /etc/rc.local 10048 3proxy EOF ``` bash gen_proxy_file_for_user service start ulimit upload_proxy>
+cat >>/etc/rc.local <<EOF
+${WORKDIR}/boot_ifconfig.sh
+${WORKDIR}/boot_iptables.sh
+ulimit -n 10048
+service 3proxy start
+EOF
+
+bash ${WORKDIR}/boot_ifconfig.sh
+bash ${WORKDIR}/boot_iptables.sh
+service 3proxy start
+
+gen_proxy_file_for_user
+upload_proxy
