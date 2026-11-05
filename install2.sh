@@ -1,6 +1,6 @@
+cat << 'EOF' > install.sh
 #!/bin/bash
 
-# Kiểm tra quyền root
 if [ "$EUID" -ne 0 ]; then
   echo "Vui lòng chạy script bằng quyền root (sudo)."
   exit 1
@@ -31,8 +31,7 @@ install_3proxy() {
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/
     
-    # Tạo Systemd service chuẩn cho 3proxy trên CentOS 10
-    cat <<EOF > /etc/systemd/system/3proxy.service
+    cat <<SERVICE > /etc/systemd/system/3proxy.service
 [Unit]
 Description=3proxy Proxy Server
 After=network.target
@@ -45,7 +44,7 @@ Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE
 
     systemctl daemon-reload
     systemctl enable 3proxy.service
@@ -101,20 +100,18 @@ EOF
 }
 
 gen_ifconfig() {
-    # Dùng lệnh ip chuẩn thay vì ifconfig
     cat <<EOF
 $(awk -F "/" -v iface="$INTERFACE" '{print "ip -6 addr add " $5 "/64 dev " iface}')
 EOF
 }
 
 echo "Đang cài đặt các gói phụ thuộc..."
-dnf -y install gcc make iproute2 bsdtar zip curl wget >/dev/null
+# Đã sửa iproute2 thành iproute cho đúng với kho ứng dụng của CentOS/RHEL
+dnf -y install gcc make iproute bsdtar zip curl wget >/dev/null
 
-# Tạo thư mục làm việc
 mkdir -p "$WORKDIR"
 cd "$WORKDIR" || exit 1
 
-# Tự động phát hiện giao diện mạng chính (Network Interface)
 INTERFACE=$(ip route show default | awk '/default/ {print $5}' | head -n1)
 if [ -z "$INTERFACE" ]; then
     INTERFACE=$(ip -o link show | awk -F': ' '$2 != "lo" {print $2}' | head -n1)
@@ -137,13 +134,11 @@ gen_iptables > "${WORKDIR}/boot_iptables.sh"
 gen_ifconfig > "${WORKDIR}/boot_ifconfig.sh"
 chmod +x "${WORKDIR}"/boot_*.sh
 
-# Cài đặt 3proxy và tạo service
 install_3proxy
 
 gen_3proxy > /usr/local/etc/3proxy/3proxy.cfg
 
-# Tạo Systemd service để tự động chạy các script boot IPv6 và iptables khi khởi động lại
-cat <<EOF > /etc/systemd/system/proxy-boot.service
+cat <<SERVICE > /etc/systemd/system/proxy-boot.service
 [Unit]
 Description=Setup Proxy IPv6 and IPTables Rules
 After=network.target
@@ -156,14 +151,15 @@ RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE
 
 systemctl daemon-reload
 systemctl enable proxy-boot.service
 systemctl start proxy-boot.service
-
-# Khởi động dịch vụ 3proxy
 systemctl start 3proxy
 
 gen_proxy_file_for_user
 upload_proxy
+EOF
+
+bash install.sh
