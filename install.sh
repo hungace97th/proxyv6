@@ -24,7 +24,7 @@ PROXY_DIR="/usr/local/etc/3proxy"
 PROXY_BIN="${PROXY_DIR}/bin/3proxy"
 PROXY_CFG="${PROXY_DIR}/3proxy.cfg"
 
-URL="https://raw.githubusercontent.com/hungace97th/proxyv6/main/3proxy-1.0.2.tar.gz"
+URL="https://raw.githubusercontent.com/quayvlog/quayvlog/main/3proxy-3proxy-0.8.6.tar.gz"
 
 mkdir -p "$WORKDIR"
 chmod 700 "$WORKDIR"
@@ -175,13 +175,13 @@ install_3proxy() {
 
     cd "$WORKDIR"
 
-    rm -rf 3proxy-1.0.2
+    rm -rf 3proxy-3proxy-0.8.6
 
     curl -fL --retry 3 "$URL" -o 3proxy.tar.gz
 
     tar -xzf 3proxy.tar.gz
 
-    cd 3proxy-1.0.2
+    cd 3proxy-3proxy-0.8.6
 
     make -f Makefile.Linux
 
