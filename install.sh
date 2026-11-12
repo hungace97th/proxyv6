@@ -42,7 +42,9 @@ install_3proxy() {
     rm -rf 3proxy-3proxy-0.8.6
     wget -qO- "$URL" | tar -xz || { echo "Tai/giai nen 3proxy that bai"; exit 1; }
     cd 3proxy-3proxy-0.8.6 || { echo "Khong thay thu muc 3proxy"; exit 1; }
-    make -f Makefile.Linux || { echo "Bien dich 3proxy that bai"; exit 1; }
+    # GCC 14 (CentOS/RHEL 10) coi incompatible-pointer-types la loi -> ha xuong thanh warning
+    make -f Makefile.Linux CC="gcc -Wno-error=incompatible-pointer-types -Wno-incompatible-pointer-types" \
+        || { echo "Bien dich 3proxy that bai"; exit 1; }
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/ 2>/dev/null || cp bin/3proxy /usr/local/etc/3proxy/bin/ \
         || { echo "Khong tim thay file binary 3proxy"; exit 1; }
