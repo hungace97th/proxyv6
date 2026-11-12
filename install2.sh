@@ -1,59 +1,65 @@
-cat << 'EOF' > install.sh
 #!/bin/bash
-
-if [ "$EUID" -ne 0 ]; then
-  echo "Vui lòng chạy script bằng quyền root (sudo)."
-  exit 1
-fi
+# IPv6 proxy installer (3proxy) - fixed for low-RAM VPS and CentOS/RHEL 9-10 (systemd)
 
 WORKDIR="/home/proxy-installer"
 WORKDATA="${WORKDIR}/data.txt"
+FIRST_PORT=10000
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Hay chay script bang root."
+    exit 1
+fi
 
 random() {
-	tr </dev/urandom -dc A-Za-z0-9 | head -c5
-	echo
+    tr </dev/urandom -dc A-Za-z0-9 | head -c5
+    echo
 }
 
 array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
 gen64() {
-	ip64() {
-		echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
-	}
-	echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
+    ip64() {
+        echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
+    }
+    echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
+}
+
+setup_swap() {
+    # VPS it RAM (<1GB) se bi OOM kill khi dnf chay -> tao swap truoc
+    if [ "$(swapon --show --noheadings | wc -l)" -eq 0 ]; then
+        echo "Tao swap 1GB de tranh het RAM..."
+        dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
+        chmod 600 /swapfile
+        mkswap /swapfile >/dev/null
+        swapon /swapfile
+        grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+    fi
 }
 
 install_3proxy() {
-    echo "Đang cài đặt 3proxy..."
-    URL="https://raw.githubusercontent.com/hungace97th/proxyv6/main/3proxy-1.0.2.tar.gz"
-    wget -qO- "$URL" | bsdtar -xvf-
-    cd 3proxy-1.0.2 || exit 1
-    make -f Makefile.Linux
+    echo "installing 3proxy"
+    URL="https://raw.githubusercontent.com/quayvlog/quayvlog/main/3proxy-3proxy-0.8.6.tar.gz"
+    cd /tmp || exit 1
+    rm -rf 3proxy-3proxy-0.8.6
+    wget -qO- "$URL" | tar -xz || { echo "Tai/giai nen 3proxy that bai"; exit 1; }
+    cd 3proxy-3proxy-0.8.6 || { echo "Khong thay thu muc 3proxy"; exit 1; }
+    # GCC 14 (CentOS/RHEL 10) coi incompatible-pointer-types la loi -> ha xuong thanh warning
+    make -f Makefile.Linux CC="gcc -Wno-error=incompatible-pointer-types -Wno-incompatible-pointer-types" \
+        || { echo "Bien dich 3proxy that bai"; exit 1; }
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
-    cp src/3proxy /usr/local/etc/3proxy/bin/
-    
-    cat <<SERVICE > /etc/systemd/system/3proxy.service
-[Unit]
-Description=3proxy Proxy Server
-After=network.target
-
-[Service]
-Type=forking
-LimitNOFILE=65535
-ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-    systemctl daemon-reload
-    systemctl enable 3proxy.service
+    cp src/3proxy /usr/local/etc/3proxy/bin/ 2>/dev/null || cp bin/3proxy /usr/local/etc/3proxy/bin/ \
+        || { echo "Khong tim thay file binary 3proxy"; exit 1; }
+    chmod +x /usr/local/etc/3proxy/bin/3proxy
     cd "$WORKDIR" || exit 1
+}
+
+gen_data() {
+    seq $FIRST_PORT $LAST_PORT | while read port; do
+        echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 $IP6)"
+    done
 }
 
 gen_3proxy() {
     cat <<EOF
-daemon
 maxconn 1000
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
@@ -62,104 +68,116 @@ setuid 65535
 flush
 auth strong
 
-users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' "${WORKDATA}")
+users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
 
 $(awk -F "/" '{print "auth strong\n" \
 "allow " $1 "\n" \
 "proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
-"flush\n"}' "${WORKDATA}")
+"flush\n"}' ${WORKDATA})
 EOF
 }
 
 gen_proxy_file_for_user() {
-    cat > proxy.txt <<EOF
-$(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' "${WORKDATA}")
-EOF
+    awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' ${WORKDATA} >"${WORKDIR}/proxy.txt"
 }
 
-upload_proxy() {
-    local PASS=$(random)
-    zip --password "$PASS" proxy.zip proxy.txt >/dev/null
-    URL=$(curl -s --upload-file proxy.zip https://transfer.sh/proxy.zip)
-
-    echo "Proxy đã sẵn sàng! Định dạng IP:PORT:LOGIN:PASS"
-    echo "Tải file zip tại: ${URL}"
-    echo "Mật khẩu giải nén: ${PASS}"
+gen_boot_network() {
+    # Script chay moi lan boot: them dia chi IPv6 + mo port firewall
+    {
+        echo "#!/bin/bash"
+        awk -F "/" -v iface="$IFACE" '{print "ip -6 addr add " $5 "/64 dev " iface " 2>/dev/null"}' ${WORKDATA}
+        echo "if systemctl is-active --quiet firewalld; then"
+        echo "    firewall-cmd --add-port=${FIRST_PORT}-${LAST_PORT}/tcp >/dev/null"
+        echo "elif command -v iptables >/dev/null 2>&1; then"
+        echo "    iptables -C INPUT -p tcp --dport ${FIRST_PORT}:${LAST_PORT} -j ACCEPT 2>/dev/null || \\"
+        echo "    iptables -I INPUT -p tcp --dport ${FIRST_PORT}:${LAST_PORT} -j ACCEPT"
+        echo "fi"
+    } >"${WORKDIR}/boot_network.sh"
+    chmod +x "${WORKDIR}/boot_network.sh"
 }
 
-gen_data() {
-    seq $FIRST_PORT $LAST_PORT | while read -r port; do
-        echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 "$IP6")"
-    done
-}
-
-gen_iptables() {
-    cat <<EOF
-$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -m state --state NEW -J ACCEPT"}' "${WORKDATA}")
-EOF
-}
-
-gen_ifconfig() {
-    cat <<EOF
-$(awk -F "/" -v iface="$INTERFACE" '{print "ip -6 addr add " $5 "/64 dev " iface}')
-EOF
-}
-
-echo "Đang cài đặt các gói phụ thuộc..."
-# Đã sửa iproute2 thành iproute cho đúng với kho ứng dụng của CentOS/RHEL
-dnf -y install gcc make iproute bsdtar zip curl wget >/dev/null
-
-mkdir -p "$WORKDIR"
-cd "$WORKDIR" || exit 1
-
-INTERFACE=$(ip route show default | awk '/default/ {print $5}' | head -n1)
-if [ -z "$INTERFACE" ]; then
-    INTERFACE=$(ip -o link show | awk -F': ' '$2 != "lo" {print $2}' | head -n1)
-fi
-echo "Giao diện mạng đang sử dụng: ${INTERFACE}"
-
-IP4=$(curl -4 -s icanhazip.com || hostname -I | awk '{print $1}')
-IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
-
-echo "Internal IP4 = ${IP4}. External IPv6 subnet = ${IP6}"
-
-echo "Bạn muốn tạo bao nhiêu proxy? Ví dụ: 500"
-read -r COUNT
-
-FIRST_PORT=10000
-LAST_PORT=$((FIRST_PORT + COUNT))
-
-gen_data > "$WORKDATA"
-gen_iptables > "${WORKDIR}/boot_iptables.sh"
-gen_ifconfig > "${WORKDIR}/boot_ifconfig.sh"
-chmod +x "${WORKDIR}"/boot_*.sh
-
-install_3proxy
-
-gen_3proxy > /usr/local/etc/3proxy/3proxy.cfg
-
-cat <<SERVICE > /etc/systemd/system/proxy-boot.service
+setup_systemd() {
+    cat >/etc/systemd/system/proxy-network.service <<EOF
 [Unit]
-Description=Setup Proxy IPv6 and IPTables Rules
-After=network.target
+Description=Add IPv6 addresses and open proxy ports
+After=network-online.target firewalld.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash ${WORKDIR}/boot_ifconfig.sh
-ExecStart=/bin/bash ${WORKDIR}/boot_iptables.sh
 RemainAfterExit=yes
+ExecStart=/bin/bash ${WORKDIR}/boot_network.sh
 
 [Install]
 WantedBy=multi-user.target
-SERVICE
-
-systemctl daemon-reload
-systemctl enable proxy-boot.service
-systemctl start proxy-boot.service
-systemctl start 3proxy
-
-gen_proxy_file_for_user
-upload_proxy
 EOF
 
-bash install.sh
+    cat >/etc/systemd/system/3proxy.service <<EOF
+[Unit]
+Description=3proxy IPv6 proxy server
+After=network-online.target proxy-network.service
+Requires=proxy-network.service
+
+[Service]
+Type=simple
+LimitNOFILE=10048
+ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable proxy-network.service 3proxy.service >/dev/null 2>&1
+    systemctl restart proxy-network.service
+    systemctl restart 3proxy.service
+}
+
+# ---------------- main ----------------
+mkdir -p "$WORKDIR" && cd "$WORKDIR" || exit 1
+
+setup_swap
+
+echo "installing apps"
+dnf -y -q install gcc make tar gzip wget curl zip iproute \
+    || { echo "Cai goi that bai, kiem tra lai mang/RAM"; exit 1; }
+
+install_3proxy
+
+echo "working folder = $WORKDIR"
+
+IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
+IP4=$(curl -4 -s icanhazip.com)
+IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
+
+if [ -z "$IFACE" ] || [ -z "$IP4" ] || [ -z "$IP6" ]; then
+    echo "Khong lay duoc IFACE/IPv4/IPv6 (IFACE='$IFACE' IP4='$IP4' IP6='$IP6'). Kiem tra VPS da bat IPv6 chua."
+    exit 1
+fi
+
+echo "Interface = ${IFACE}. Internal ip = ${IP4}. External sub for ip6 = ${IP6}"
+
+echo "How many proxy do you want to create? Example 500"
+read COUNT
+case "$COUNT" in
+    ''|*[!0-9]*) echo "Hay nhap mot so nguyen duong"; exit 1 ;;
+esac
+[ "$COUNT" -lt 1 ] && { echo "So luong phai >= 1"; exit 1; }
+
+LAST_PORT=$((FIRST_PORT + COUNT - 1))
+
+gen_data >"$WORKDATA"
+gen_boot_network
+gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
+
+setup_systemd
+
+gen_proxy_file_for_user
+
+echo
+echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
+echo "File: ${WORKDIR}/proxy.txt"
+echo "Trang thai dich vu: $(systemctl is-active 3proxy.service)"
+echo "---- 5 proxy dau tien ----"
+head -n 5 "${WORKDIR}/proxy.txt"
