@@ -188,8 +188,10 @@ setup_systemd
 
 gen_proxy_file_for_user
 
-cp "${WORKDIR}/proxy.txt" /root/proxy.txt
 echo "${IP4}:${V4_PORT}:${V4_USER}:${V4_PASS}" >/root/proxy_v4.txt
+# Them proxy v4 (SOCKS5) vao cuoi proxy.txt
+cat /root/proxy_v4.txt >>"${WORKDIR}/proxy.txt"
+cp "${WORKDIR}/proxy.txt" /root/proxy.txt
 
 echo
 echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
@@ -212,7 +214,7 @@ fi
 
 echo
 echo "---- Test 5 proxy IPv6 dau tien (ngay tren VPS) ----"
-head -n 5 "${WORKDIR}/proxy.txt" | while IFS=: read -r pip pport puser ppass; do
+head -n $(( COUNT < 5 ? COUNT : 5 )) "${WORKDIR}/proxy.txt" | while IFS=: read -r pip pport puser ppass; do
     OUT=$(curl -s --max-time 10 -x "http://${puser}:${ppass}@${pip}:${pport}" https://ipv6.icanhazip.com 2>&1)
     if [ -n "$OUT" ]; then
         echo "OK   ${pip}:${pport} -> ${OUT}"
